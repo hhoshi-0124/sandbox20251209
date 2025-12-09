@@ -1,0 +1,71 @@
+name: 'Mutex Unlock'
+description: 'Release a mutex lock by removing the lock file'
+inputs:
+  lock-branch:
+    description: 'Branch name used for mutex'
+    required: true
+  lock-file:
+    description: 'Name of the lock file to remove'
+    required: true
+  github-token:
+    description: 'GitHub token for pushing to lock branch'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Remove lock file
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
+        
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Fetch and checkout lock branch
+        git fetch origin "${{ inputs.lock-branch }}"
+        
+        if git show-ref --verify --quiet "refs/heads/${{ inputs.lock-branch }}"; then
+          git checkout "${{ inputs.lock-branch }}"
+        else
+          git checkout -b "${{ inputs.lock-branch }}" "origin/${{ inputs.lock-branch }}"
+        fi
+        
+        git reset --hard "origin/${{ inputs.lock-branch }}"
+        
+        # Remove lock file if it exists
+        if [ -f "${{ inputs.lock-file }}" ]; then
+          git rm "${{ inputs.lock-file }}"
+          git commit -m "Release lock: ${{ inputs.lock-file }}"
+          
+          # Try to push with retry
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if git push origin "${{ inputs.lock-branch }}"; then
+              echo "Lock file removed successfully"
+              break
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "Push failed, retrying ($RETRY_COUNT/$MAX_RETRIES)..."
+                sleep $((RETRY_COUNT * 2))
+                git pull --rebase origin "${{ inputs.lock-branch }}"
+                # Reapply removal if needed
+                if [ -f "${{ inputs.lock-file }}" ]; then
+                  git rm "${{ inputs.lock-file }}"
+                  git commit -m "Release lock: ${{ inputs.lock-file }}"
+                fi
+              else
+                echo "Warning: Failed to remove lock file after $MAX_RETRIES attempts"
+                git checkout "$ORIGINAL_BRANCH"
+                exit 0  # Don't fail the workflow
+              fi
+            fi
+          done
+        else
+          echo "Lock file ${{ inputs.lock-file }} not found (already removed)"
+        fi
+        
+        git checkout "$ORIGINAL_BRANCH"

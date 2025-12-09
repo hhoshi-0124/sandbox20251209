@@ -1,0 +1,315 @@
+name: Deploy Ja with Mutex
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - "ja/**"
+
+# GitHub Actionsにブランチへの書き込み権限を付与
+permissions:
+  contents: write
+  pull-requests: read
+
+# 全ジョブで共有する環境変数
+env:
+  LOCK_BRANCH: document-deploy-mutex-stage
+  LOCK_DEPLOY_ENVIRONMENT: ステージング
+  LOCK_FILE_PREFIX: deploy-ja
+  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。"
+  LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
+  LOCK_BRANCH_README_BODY3: "# [注意点]"
+  LOCK_BRANCH_README_BODY4: "手動でジョブをキャンセルした場合はロックファイルが残ったままとなる場合があります。その場合は、該当のロックファイルを手動で削除してください。"
+
+concurrency:
+  group: document-stage-${{ github.event.number }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  acquire-lock:
+    runs-on: ubuntu-latest
+    outputs:
+      lock-acquired: ${{ steps.acquire.outputs.acquired }}
+      lock-file: ${{ steps.acquire.outputs.lock_file }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Acquire Lock
+        id: acquire
+        run: |
+          MAX_WAIT_TIME=3600  # 60分(複数フォルダ更新時を考慮しタイムアウトを60分に設定)
+          START_TIME=$(date +%s)
+          ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
+          
+          # ロックブランチの存在確認と作成
+          if ! git ls-remote --heads origin "${{ env.LOCK_BRANCH }}" | grep -q "${{ env.LOCK_BRANCH }}"; then
+            echo "Creating lock branch..."
+            git checkout --orphan "${{ env.LOCK_BRANCH }}"
+            git rm -rf . 2>/dev/null || true
+            # README.mdを作成（テンプレート文字列を置換）
+            README_BODY1="${{ env.LOCK_BRANCH_README_BODY1 }}"
+            README_BODY1="${README_BODY1//__LOCK_DEPLOY_ENVIRONMENT__/${{ env.LOCK_DEPLOY_ENVIRONMENT }}}"
+            README_BODY2="${{ env.LOCK_BRANCH_README_BODY2 }}"
+            README_BODY3="${{ env.LOCK_BRANCH_README_BODY3 }}"
+            README_BODY4="${{ env.LOCK_BRANCH_README_BODY4 }}"
+            {
+              echo "# ${{ env.LOCK_BRANCH }}"
+              echo ""
+              echo "$README_BODY1"
+              echo ""
+              echo "$README_BODY2"
+              echo ""
+              echo "$README_BODY3"
+              echo ""
+              echo "$README_BODY4"
+            } > README.md
+            git add README.md
+            git commit -m "Initialize mutex lock branch"
+            if ! git push origin "${{ env.LOCK_BRANCH }}"; then
+              echo "Failed to create lock branch (may already exist)"
+            fi
+            git checkout "$ORIGINAL_BRANCH"
+          fi
+          
+          # ロックブランチをフェッチ
+          git fetch origin "${{ env.LOCK_BRANCH }}"
+          git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+            git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
+          }
+          
+          # 自分のロックファイルを作成（プッシュ直前にタイムスタンプを取得）
+          TIMESTAMP=$(date +%s%N)
+          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-${TIMESTAMP}-${{ github.run_id }}-${{ github.run_attempt }}-PR${{ github.event.number }}.lock"
+          echo "${TIMESTAMP}-${{ github.run_id }}-${{ github.run_attempt }}-PR${{ github.event.number }}" > "$LOCK_FILE"
+          git add "$LOCK_FILE"
+          git commit -m "Request lock: $LOCK_FILE"
+          
+          echo "lock_file=$LOCK_FILE" >> $GITHUB_OUTPUT
+          
+          # プッシュ（リトライあり）
+          RETRY=0
+          while [ $RETRY -lt 5 ]; do
+            if git push origin "${{ env.LOCK_BRANCH }}"; then
+              break
+            else
+              echo "Push failed, pulling and retrying..."
+              git pull --rebase origin "${{ env.LOCK_BRANCH }}"
+              RETRY=$((RETRY + 1))
+              sleep 2
+            fi
+          done
+          
+          if [ $RETRY -eq 5 ]; then
+            echo "Failed to push lock file after retries"
+            # ローカルクリーンアップ（コミットを取り消す）
+            git reset --hard HEAD~1 2>/dev/null || true
+            git checkout "$ORIGINAL_BRANCH"
+            echo "acquired=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          git checkout "$ORIGINAL_BRANCH"
+          
+          # キューの先頭になるまで待機
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            if [ $ELAPSED -gt $MAX_WAIT_TIME ]; then
+              echo "Timeout waiting for lock"
+              echo "acquired=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # 最新のロックブランチ状態を取得
+            git fetch origin "${{ env.LOCK_BRANCH }}"
+            git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+              git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
+            }
+            git reset --hard "origin/${{ env.LOCK_BRANCH }}"
+            
+            # 現在存在するロックファイルのみを取得してソート（ファイル名順 = タイムスタンプ順）
+            LOCK_FILES=$(ls *.lock 2>/dev/null | sort)
+            
+            if [ -z "$LOCK_FILES" ]; then
+              echo "No lock files found, something went wrong"
+              git checkout "$ORIGINAL_BRANCH"
+              echo "acquired=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # 最初（最も古い）のロックファイルを取得
+            FIRST_LOCK=$(echo "$LOCK_FILES" | head -n 1)
+            
+            echo "Current queue:"
+            echo "$LOCK_FILES"
+            echo "First in queue: $FIRST_LOCK"
+            echo "My lock file: $LOCK_FILE"
+            
+            # 自分のファイルがキューの先頭かチェック
+            if [ "$FIRST_LOCK" = "$LOCK_FILE" ]; then
+              echo "Lock acquired! I'm first in queue."
+              git checkout "$ORIGINAL_BRANCH"
+              echo "acquired=true" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "Waiting... Currently $FIRST_LOCK is holding the lock"
+              git checkout "$ORIGINAL_BRANCH"
+              sleep 10
+            fi
+          done
+
+  setup:
+    runs-on: ubuntu-latest
+    needs: acquire-lock
+    if: needs.acquire-lock.outputs.lock-acquired == 'true'
+    outputs:
+      dirs: ${{ steps.set-matrix.outputs.dirs }}
+      new_commit_sha: ${{ steps.commit.outputs.new_commit_sha }}
+    
+    #steps:
+    #  - name: Checkout
+    #    uses: actions/checkout@v4
+    #  
+    #  - name: Get changed directories
+    #    id: set-matrix
+    #    run: |
+    #      # 変更されたディレクトリを検出するロジック
+    #      DIRS='["ja/202407"]'
+    #      echo "dirs=$DIRS" >> $GITHUB_OUTPUT
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: find changed directories
+        id: set-matrix
+        run: |
+          ARRAY=()
+          DIR=$(git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }} --dirstat=files,0 | sed 's/^[ 0-9.]\+% //g' | grep 'ja/' | sed -E 's/ja\/([^\/]+)\/.*$/\1/g'| sort -u)
+          for dir in $DIR 
+          do
+            ARRAY+=("$dir")
+          done
+
+          list=$(echo $(printf "\"%s\", " "${ARRAY[@]}"))
+          list=$(echo "[${list%,}]" | jq -c .)
+          echo "dirs=$list" >> "$GITHUB_OUTPUT"
+
+      - name: Pull latest changes before processing
+        run: |
+          PR_BRANCH=${{ github.head_ref }}
+          git pull origin $PR_BRANCH || true
+      - name: Replace youtube.com with youtube-nocookie.com
+
+        run: |
+          TARGET_DIR="ja/${{ matrix.dir }}"
+          find "$TARGET_DIR" -type f -print0 | while IFS= read -r -d $'\0' file; do
+            if [[ -f "$file" && $(file -b --mime-type "$file") =~ ^text/ ]]; then
+              sed -i '/www.youtube-nocookie\.com/!s|www.youtube\.com|www.youtube-nocookie.com|g' "$file"
+            fi
+          done 
+
+      - name: commit and push changes
+        id: commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+        run: |
+          if git diff --quiet; then
+            echo "No Commit."
+            echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"          
+          git add .
+          git commit -m "[update] replace youtube.com with youtube-nocookie.com(automatically)"
+          git push origin HEAD:${{ github.head_ref }}
+          echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build_and_deploy_job:
+    runs-on: ubuntu-latest
+    needs: [acquire-lock, setup]
+    if: needs.acquire-lock.outputs.lock-acquired == 'true'
+    env: 
+      retry_interval: 20
+      max_retries: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        dir: ${{ fromJson(needs.setup.outputs.dirs) }}
+    name: Build and Deploy Job
+    steps:
+      - name: Checkout the new commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.new_commit_sha }}
+          submodules: true
+          lfs: false
+      
+      - name: Deploy ${{ matrix.dir }}
+        run: |
+          echo "Deploying ${{ matrix.dir }}..."
+          # デプロイ処理をここに記述
+
+  release-lock:
+    runs-on: ubuntu-latest
+    needs: [acquire-lock, setup, build_and_deploy_job]
+    if: (success() || failure() || cancelled()) && needs.acquire-lock.outputs.lock-acquired == 'true'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Release Lock
+        run: |
+          LOCK_FILE="${{ needs.acquire-lock.outputs.lock-file }}"
+          ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
+          
+          # ロックブランチをチェックアウト
+          git fetch origin "${{ env.LOCK_BRANCH }}"
+          git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+            git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
+          }
+          
+          # ロックファイルを削除
+          if [ -f "$LOCK_FILE" ]; then
+            git rm "$LOCK_FILE"
+            git commit -m "Release lock: $LOCK_FILE"
+            git push origin "${{ env.LOCK_BRANCH }}" || {
+              echo "Failed to delete lock file, but continuing..."
+            }
+            echo "Lock released successfully: $LOCK_FILE"
+          else
+            echo "Lock file not found: $LOCK_FILE"
+          fi
+          
+          git checkout "$ORIGINAL_BRANCH"
