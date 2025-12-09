@@ -18,7 +18,7 @@ env:
   LOCK_BRANCH: document-deploy-mutex-stage
   LOCK_DEPLOY_ENVIRONMENT: ステージング
   LOCK_FILE_PREFIX: deploy-ja1
-  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。\n"
+  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。"
   LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
 
 concurrency:
@@ -66,11 +66,12 @@ jobs:
             # README.mdを作成（テンプレート文字列を置換）
             README_BODY1="${{ env.LOCK_BRANCH_README_BODY1 }}"
             README_BODY1="${README_BODY1//__LOCK_DEPLOY_ENVIRONMENT__/${{ env.LOCK_DEPLOY_ENVIRONMENT }}}"
+            README_BODY2="${{ env.LOCK_BRANCH_README_BODY2 }}"
             {
               echo "# ${{ env.LOCK_BRANCH }}"
               echo ""
               echo "$README_BODY1"
-              echo "${{ env.LOCK_BRANCH_README_BODY2 }}"
+              echo "$README_BODY2"
             } > README.md
             git add README.md
             git commit -m "Initialize mutex lock branch"
