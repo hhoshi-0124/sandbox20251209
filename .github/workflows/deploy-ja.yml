@@ -51,7 +51,7 @@ jobs:
       - name: Acquire Lock
         id: acquire
         run: |
-          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}.lock"
+          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-PR${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}.lock"
           MAX_WAIT_TIME=300  # 5分
           START_TIME=$(date +%s)
           ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
@@ -90,7 +90,7 @@ jobs:
           
           # 自分のロックファイルを作成
           TIMESTAMP=$(date +%s%N)
-          echo "${{ github.run_id }}-${{ github.run_attempt }}-${TIMESTAMP}" > "$LOCK_FILE"
+          echo "PR${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}-${TIMESTAMP}" > "$LOCK_FILE"
           git add "$LOCK_FILE"
           git commit -m "Request lock: $LOCK_FILE"
           
