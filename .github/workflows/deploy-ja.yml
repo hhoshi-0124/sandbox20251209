@@ -69,6 +69,8 @@ jobs:
             README_BODY1="${{ env.LOCK_BRANCH_README_BODY1 }}"
             README_BODY1="${README_BODY1//__LOCK_DEPLOY_ENVIRONMENT__/${{ env.LOCK_DEPLOY_ENVIRONMENT }}}"
             README_BODY2="${{ env.LOCK_BRANCH_README_BODY2 }}"
+            README_BODY3="${{ env.LOCK_BRANCH_README_BODY3 }}"
+            README_BODY4="${{ env.LOCK_BRANCH_README_BODY4 }}"
             {
               echo "# ${{ env.LOCK_BRANCH }}"
               echo ""
