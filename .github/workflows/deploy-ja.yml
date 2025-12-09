@@ -70,6 +70,7 @@ jobs:
               echo "# ${{ env.LOCK_BRANCH }}"
               echo ""
               echo "$README_BODY1"
+              echo ""
               echo "${{ env.LOCK_BRANCH_README_BODY2 }}"
             } > README.md
             git add README.md
