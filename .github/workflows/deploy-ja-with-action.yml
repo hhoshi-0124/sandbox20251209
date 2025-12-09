@@ -1,0 +1,92 @@
+name: Deploy JA (with Composite Action)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'ja/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  LOCK_BRANCH: document-deploy-mutex-stage
+  LOCK_FILE_PREFIX: deploy-ja
+
+jobs:
+  acquire-lock:
+    runs-on: ubuntu-latest
+    outputs:
+      lock-file: ${{ steps.lock.outputs.lock-file }}
+      acquired: ${{ steps.lock.outputs.acquired }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Acquire mutex lock
+        id: lock
+        uses: ./.github/actions/mutex-lock
+        with:
+          lock-branch: ${{ env.LOCK_BRANCH }}
+          lock-file-prefix: ${{ env.LOCK_FILE_PREFIX }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ github.event.number }}
+          timeout-minutes: 60
+
+  setup:
+    needs: acquire-lock
+    if: needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies..."
+          # npm install などの処理
+
+  build_and_deploy_job:
+    needs: [acquire-lock, setup]
+    if: needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Build
+        run: |
+          echo "Building project..."
+          # ビルド処理
+      
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          echo "Lock file: ${{ needs.acquire-lock.outputs.lock-file }}"
+          # デプロイ処理
+          sleep 30  # Simulate deployment
+
+  release-lock:
+    needs: [acquire-lock, build_and_deploy_job]
+    if: always() && needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Release mutex lock
+        uses: ./.github/actions/mutex-unlock
+        with:
+          lock-branch: ${{ env.LOCK_BRANCH }}
+          lock-file: ${{ needs.acquire-lock.outputs.lock-file }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
