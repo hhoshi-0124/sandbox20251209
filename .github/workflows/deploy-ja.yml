@@ -17,6 +17,8 @@ permissions:
 env:
   LOCK_BRANCH: gh-action-mutex
   LOCK_FILE_PREFIX: deploy-ja
+  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの本番環境デプロイ時の排他に使用する空のブランチです。"
+  LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
 
 concurrency:
   group: document-stage-${{ github.event.number }}
@@ -60,7 +62,13 @@ jobs:
             echo "Creating lock branch..."
             git checkout --orphan "${{ env.LOCK_BRANCH }}"
             git rm -rf . 2>/dev/null || true
-            echo "Mutex lock branch" > README.md
+            # README.mdを作成
+            cat > README.md << 'EOFREADME'
+# ${{ env.LOCK_BRANCH }}
+
+${{ env.LOCK_BRANCH_README_BODY1 }}
+${{ env.LOCK_BRANCH_README_BODY2 }}
+EOFREADME
             git add README.md
             git commit -m "Initialize mutex lock branch"
             if ! git push origin "${{ env.LOCK_BRANCH }}"; then
