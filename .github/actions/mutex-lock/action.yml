@@ -94,7 +94,7 @@ runs:
       run: |
         ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
         LOCK_FILE="${{ steps.create-lock.outputs.lock-file }}"
-        TIMEOUT_SECONDS=$(($${{ inputs.timeout-minutes }} * 60))
+        TIMEOUT_SECONDS=$((${{ inputs.timeout-minutes }} * 60))
         START_TIME=$(date +%s)
         
         echo "Waiting for lock acquisition..."
@@ -119,7 +119,7 @@ runs:
             git checkout "${{ inputs.lock-branch }}"
           else
             git checkout -b "${{ inputs.lock-branch }}" "origin/${{ inputs.lock-branch }}"
-          }
+          fi
           git reset --hard "origin/${{ inputs.lock-branch }}"
           
           # Get currently existing lock files sorted by filename (timestamp prefix)
