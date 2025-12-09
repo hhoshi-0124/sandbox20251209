@@ -53,12 +53,9 @@ jobs:
       - name: Acquire Lock
         id: acquire
         run: |
-          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-PR${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}.lock"
           MAX_WAIT_TIME=3600  # 60分(複数フォルダ更新時を考慮しタイムアウトを60分に設定)
           START_TIME=$(date +%s)
           ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
-          
-          echo "lock_file=$LOCK_FILE" >> $GITHUB_OUTPUT
           
           # ロックブランチの存在確認と作成
           if ! git ls-remote --heads origin "${{ env.LOCK_BRANCH }}" | grep -q "${{ env.LOCK_BRANCH }}"; then
@@ -96,11 +93,14 @@ jobs:
             git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
           }
           
-          # 自分のロックファイルを作成
+          # 自分のロックファイルを作成（プッシュ直前にタイムスタンプを取得）
           TIMESTAMP=$(date +%s%N)
-          echo "PR${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}-${TIMESTAMP}" > "$LOCK_FILE"
+          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-${TIMESTAMP}-${{ github.run_id }}-${{ github.run_attempt }}-PR${{ github.event.number }}.lock"
+          echo "${TIMESTAMP}-${{ github.run_id }}-${{ github.run_attempt }}-PR${{ github.event.number }}" > "$LOCK_FILE"
           git add "$LOCK_FILE"
           git commit -m "Request lock: $LOCK_FILE"
+          
+          echo "lock_file=$LOCK_FILE" >> $GITHUB_OUTPUT
           
           # プッシュ（リトライあり）
           RETRY=0
@@ -144,8 +144,8 @@ jobs:
             }
             git reset --hard "origin/${{ env.LOCK_BRANCH }}"
             
-            # 全てのロックファイルを取得してソート（ファイル名順 = タイムスタンプ順）
-            LOCK_FILES=$(ls *.lock 2>/dev/null | sort)
+            # 全てのロックファイルを取得してソート（コミット順 = プッシュ順）
+            LOCK_FILES=$(git log --name-only --pretty=format: --diff-filter=A -- '*.lock' | grep -v '^$' | tac)
             
             if [ -z "$LOCK_FILES" ]; then
               echo "No lock files found, something went wrong"
