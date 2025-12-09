@@ -47,6 +47,7 @@ jobs:
           LOCK_FILE="deploy-ja-${{ github.run_id }}-${{ github.run_attempt }}.lock"
           MAX_WAIT_TIME=300  # 5分
           START_TIME=$(date +%s)
+          ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
           
           echo "lock_file=$LOCK_FILE" >> $GITHUB_OUTPUT
           
@@ -61,7 +62,7 @@ jobs:
             if ! git push origin "$LOCK_BRANCH"; then
               echo "Failed to create lock branch (may already exist)"
             fi
-            git checkout -
+            git checkout "$ORIGINAL_BRANCH"
           fi
           
           # ロックブランチをフェッチ
@@ -91,12 +92,12 @@ jobs:
           
           if [ $RETRY -eq 5 ]; then
             echo "Failed to push lock file after retries"
-            git checkout -
+            git checkout "$ORIGINAL_BRANCH"
             echo "acquired=false" >> $GITHUB_OUTPUT
             exit 1
           fi
           
-          git checkout -
+          git checkout "$ORIGINAL_BRANCH"
           
           # キューの先頭になるまで待機
           while true; do
@@ -121,7 +122,7 @@ jobs:
             
             if [ -z "$LOCK_FILES" ]; then
               echo "No lock files found, something went wrong"
-              git checkout -
+              git checkout "$ORIGINAL_BRANCH"
               echo "acquired=false" >> $GITHUB_OUTPUT
               exit 1
             fi
@@ -137,12 +138,12 @@ jobs:
             # 自分のファイルがキューの先頭かチェック
             if [ "$FIRST_LOCK" = "$LOCK_FILE" ]; then
               echo "Lock acquired! I'm first in queue."
-              git checkout -
+              git checkout "$ORIGINAL_BRANCH"
               echo "acquired=true" >> $GITHUB_OUTPUT
               exit 0
             else
               echo "Waiting... Currently $FIRST_LOCK is holding the lock"
-              git checkout -
+              git checkout "$ORIGINAL_BRANCH"
               sleep 10
             fi
           done
@@ -265,6 +266,7 @@ jobs:
         run: |
           LOCK_BRANCH="gh-action-mutex"
           LOCK_FILE="${{ needs.acquire-lock.outputs.lock-file }}"
+          ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
           
           # ロックブランチをチェックアウト
           git fetch origin "$LOCK_BRANCH"
@@ -284,4 +286,4 @@ jobs:
             echo "Lock file not found: $LOCK_FILE"
           fi
           
-          git checkout -
+          git checkout "$ORIGINAL_BRANCH"
