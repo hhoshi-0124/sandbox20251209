@@ -17,7 +17,7 @@ permissions:
 env:
   LOCK_BRANCH: document-deploy-mutex-stage
   LOCK_DEPLOY_ENVIRONMENT: ステージング
-  LOCK_FILE_PREFIX: deploy-ja
+  LOCK_FILE_PREFIX: deploy-ja1
   LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。\n"
   LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
 
