@@ -1,0 +1,140 @@
+name: Deploy JA (with Composite Action)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'ja/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  LOCK_BRANCH: document-deploy-mutex-stage
+  LOCK_FILE_PREFIX: deploy-ja
+
+jobs:
+  acquire-lock:
+    runs-on: ubuntu-latest
+    outputs:
+      lock-file: ${{ steps.lock.outputs.lock-file }}
+      acquired: ${{ steps.lock.outputs.acquired }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Acquire mutex lock
+        id: lock
+        uses: ./.github/actions/mutex-lock
+        with:
+          lock-branch: ${{ env.LOCK_BRANCH }}
+          lock-file-prefix: ${{ env.LOCK_FILE_PREFIX }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ github.event.number }}
+          timeout-minutes: 60
+
+  setup:
+    needs: acquire-lock
+    if: needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.set-matrix.outputs.dirs }}
+      new_commit_sha: ${{ steps.commit.outputs.new_commit_sha }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: find changed directories
+        id: set-matrix
+        run: |
+          ARRAY=()
+          DIR=$(git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }} --dirstat=files,0 | sed 's/^[ 0-9.]\+% //g' | grep 'ja/' | sed -E 's/ja\/([^\/]+)\/.*$/\1/g'| sort -u)
+          for dir in $DIR 
+          do
+            ARRAY+=("$dir")
+          done
+
+          list=$(echo $(printf "\"%s\", " "${ARRAY[@]}"))
+          list=$(echo "[${list%,}]" | jq -c .)
+          echo "dirs=$list" >> "$GITHUB_OUTPUT"
+
+      - name: Pull latest changes before processing
+        run: |
+          PR_BRANCH=${{ github.head_ref }}
+          git pull origin $PR_BRANCH || true
+      - name: Replace youtube.com with youtube-nocookie.com
+
+        run: |
+          TARGET_DIR="ja/${{ matrix.dir }}"
+          find "$TARGET_DIR" -type f -print0 | while IFS= read -r -d $'\0' file; do
+            if [[ -f "$file" && $(file -b --mime-type "$file") =~ ^text/ ]]; then
+              sed -i '/www.youtube-nocookie\.com/!s|www.youtube\.com|www.youtube-nocookie.com|g' "$file"
+            fi
+          done 
+
+      - name: commit and push changes
+        id: commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+        run: |
+          if git diff --quiet; then
+            echo "No Commit."
+            echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"          
+          git add .
+          git commit -m "[update] replace youtube.com with youtube-nocookie.com(automatically)"
+          git push origin HEAD:${{ github.head_ref }}
+          echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build_and_deploy_job:
+    needs: [acquire-lock, setup]
+    if: needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    env: 
+      retry_interval: 20
+      max_retries: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        dir: ${{ fromJson(needs.setup.outputs.dirs) }}
+    name: Build and Deploy Job
+    steps:
+      - name: Checkout the new commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.new_commit_sha }}
+          submodules: true
+          lfs: false
+      
+      - name: Deploy ${{ matrix.dir }}
+        run: |
+          echo "Deploying ${{ matrix.dir }}..."
+          # デプロイ処理をここに記述
+
+  release-lock:
+    needs: [acquire-lock, build_and_deploy_job]
+    if: always() && needs.acquire-lock.outputs.acquired == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Release mutex lock
+        uses: ./.github/actions/mutex-unlock
+        with:
+          lock-branch: ${{ env.LOCK_BRANCH }}
+          lock-file: ${{ needs.acquire-lock.outputs.lock-file }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
