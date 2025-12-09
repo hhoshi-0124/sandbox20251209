@@ -1,0 +1,155 @@
+name: 'Mutex Lock'
+description: 'Acquire a mutex lock using a Git branch-based queue'
+inputs:
+  lock-branch:
+    description: 'Branch name to use for mutex'
+    required: true
+  lock-file-prefix:
+    description: 'Prefix for lock file name'
+    required: true
+  github-token:
+    description: 'GitHub token for pushing to lock branch'
+    required: true
+  pr-number:
+    description: 'Pull request number'
+    required: true
+  timeout-minutes:
+    description: 'Timeout in minutes for acquiring lock'
+    required: false
+    default: '60'
+outputs:
+  lock-file:
+    description: 'Name of the lock file created'
+    value: ${{ steps.create-lock.outputs.lock-file }}
+  acquired:
+    description: 'Whether the lock was acquired'
+    value: ${{ steps.wait-lock.outputs.acquired }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Create lock file
+      id: create-lock
+      shell: bash
+      run: |
+        ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
+        echo "original-branch=$ORIGINAL_BRANCH" >> $GITHUB_OUTPUT
+        
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Check if lock branch exists
+        if git ls-remote --heads origin "${{ inputs.lock-branch }}" | grep -q "${{ inputs.lock-branch }}"; then
+          git fetch origin "${{ inputs.lock-branch }}"
+          git checkout -b "${{ inputs.lock-branch }}" "origin/${{ inputs.lock-branch }}"
+        else
+          # Create orphan branch for locks
+          git checkout --orphan "${{ inputs.lock-branch }}"
+          git rm -rf .
+          echo "# Mutex Lock Branch" > README.md
+          git add README.md
+          git commit -m "Initialize mutex lock branch"
+          git push origin "${{ inputs.lock-branch }}"
+        fi
+        
+        # Create lock file with timestamp prefix for sorting
+        TIMESTAMP=$(date +%s%N)
+        LOCK_FILE="${{ inputs.lock-file-prefix }}-${TIMESTAMP}-${{ github.run_id }}-${{ github.run_attempt }}-PR${{ inputs.pr-number }}.lock"
+        echo "Lock file for PR#${{ inputs.pr-number }}" > "$LOCK_FILE"
+        echo "Run ID: ${{ github.run_id }}" >> "$LOCK_FILE"
+        echo "Run Attempt: ${{ github.run_attempt }}" >> "$LOCK_FILE"
+        echo "Created: $(date -Iseconds)" >> "$LOCK_FILE"
+        
+        git add "$LOCK_FILE"
+        git commit -m "Add lock file: $LOCK_FILE"
+        
+        # Try to push with retry
+        MAX_RETRIES=5
+        RETRY_COUNT=0
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          if git push origin "${{ inputs.lock-branch }}"; then
+            echo "Lock file pushed successfully"
+            break
+          else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "Push failed, retrying ($RETRY_COUNT/$MAX_RETRIES)..."
+              sleep $((RETRY_COUNT * 2))
+              git pull --rebase origin "${{ inputs.lock-branch }}"
+            else
+              echo "Failed to push lock file after $MAX_RETRIES attempts"
+              git checkout "$ORIGINAL_BRANCH"
+              exit 1
+            fi
+          fi
+        done
+        
+        git checkout "$ORIGINAL_BRANCH"
+        echo "lock-file=$LOCK_FILE" >> $GITHUB_OUTPUT
+    
+    - name: Wait for lock
+      id: wait-lock
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
+        LOCK_FILE="${{ steps.create-lock.outputs.lock-file }}"
+        TIMEOUT_SECONDS=$((${{ inputs.timeout-minutes }} * 60))
+        START_TIME=$(date +%s)
+        
+        echo "Waiting for lock acquisition..."
+        echo "Lock file: $LOCK_FILE"
+        echo "Timeout: ${{ inputs.timeout-minutes }} minutes"
+        
+        while true; do
+          # Check timeout
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$((CURRENT_TIME - START_TIME))
+          if [ $ELAPSED -ge $TIMEOUT_SECONDS ]; then
+            echo "Timeout reached after ${{ inputs.timeout-minutes }} minutes"
+            echo "acquired=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Fetch latest state
+          git fetch origin "${{ inputs.lock-branch }}"
+          
+          # Switch to lock branch
+          if git show-ref --verify --quiet "refs/heads/${{ inputs.lock-branch }}"; then
+            git checkout "${{ inputs.lock-branch }}"
+          else
+            git checkout -b "${{ inputs.lock-branch }}" "origin/${{ inputs.lock-branch }}"
+          fi
+          git reset --hard "origin/${{ inputs.lock-branch }}"
+          
+          # Get currently existing lock files sorted by filename (timestamp prefix)
+          LOCK_FILES=$(ls *.lock 2>/dev/null | sort)
+          
+          if [ -z "$LOCK_FILES" ]; then
+            echo "No lock files found, something went wrong"
+            git checkout "$ORIGINAL_BRANCH"
+            echo "acquired=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Get first lock file
+          FIRST_LOCK=$(echo "$LOCK_FILES" | head -n 1)
+          
+          echo "Current queue:"
+          echo "$LOCK_FILES"
+          echo "First in queue: $FIRST_LOCK"
+          echo "My lock file: $LOCK_FILE"
+          
+          # Check if we're first
+          if [ "$FIRST_LOCK" = "$LOCK_FILE" ]; then
+            echo "Lock acquired! I'm first in queue."
+            git checkout "$ORIGINAL_BRANCH"
+            echo "acquired=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Wait before next check
+          echo "Not first in queue, waiting..."
+          git checkout "$ORIGINAL_BRANCH"
+          sleep 10
+        done
