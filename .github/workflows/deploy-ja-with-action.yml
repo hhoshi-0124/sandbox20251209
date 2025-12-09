@@ -40,39 +40,87 @@ jobs:
     needs: acquire-lock
     if: needs.acquire-lock.outputs.acquired == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.set-matrix.outputs.dirs }}
+      new_commit_sha: ${{ steps.commit.outputs.new_commit_sha }}
     steps:
-      - name: Checkout
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      
-      - name: Install dependencies
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: find changed directories
+        id: set-matrix
         run: |
-          echo "Installing dependencies..."
-          # npm install などの処理
+          ARRAY=()
+          DIR=$(git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }} --dirstat=files,0 | sed 's/^[ 0-9.]\+% //g' | grep 'ja/' | sed -E 's/ja\/([^\/]+)\/.*$/\1/g'| sort -u)
+          for dir in $DIR 
+          do
+            ARRAY+=("$dir")
+          done
+
+          list=$(echo $(printf "\"%s\", " "${ARRAY[@]}"))
+          list=$(echo "[${list%,}]" | jq -c .)
+          echo "dirs=$list" >> "$GITHUB_OUTPUT"
+
+      - name: Pull latest changes before processing
+        run: |
+          PR_BRANCH=${{ github.head_ref }}
+          git pull origin $PR_BRANCH || true
+      - name: Replace youtube.com with youtube-nocookie.com
+
+        run: |
+          TARGET_DIR="ja/${{ matrix.dir }}"
+          find "$TARGET_DIR" -type f -print0 | while IFS= read -r -d $'\0' file; do
+            if [[ -f "$file" && $(file -b --mime-type "$file") =~ ^text/ ]]; then
+              sed -i '/www.youtube-nocookie\.com/!s|www.youtube\.com|www.youtube-nocookie.com|g' "$file"
+            fi
+          done 
+
+      - name: commit and push changes
+        id: commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+        run: |
+          if git diff --quiet; then
+            echo "No Commit."
+            echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"          
+          git add .
+          git commit -m "[update] replace youtube.com with youtube-nocookie.com(automatically)"
+          git push origin HEAD:${{ github.head_ref }}
+          echo "new_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build_and_deploy_job:
     needs: [acquire-lock, setup]
     if: needs.acquire-lock.outputs.acquired == 'true'
     runs-on: ubuntu-latest
+    env: 
+      retry_interval: 20
+      max_retries: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        dir: ${{ fromJson(needs.setup.outputs.dirs) }}
+    name: Build and Deploy Job
     steps:
-      - name: Checkout
+      - name: Checkout the new commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.new_commit_sha }}
+          submodules: true
+          lfs: false
       
-      - name: Build
+      - name: Deploy ${{ matrix.dir }}
         run: |
-          echo "Building project..."
-          # ビルド処理
-      
-      - name: Deploy to staging
-        run: |
-          echo "Deploying to staging environment..."
-          echo "Lock file: ${{ needs.acquire-lock.outputs.lock-file }}"
-          # デプロイ処理
-          sleep 30  # Simulate deployment
+          echo "Deploying ${{ matrix.dir }}..."
+          # デプロイ処理をここに記述
 
   release-lock:
     needs: [acquire-lock, build_and_deploy_job]
