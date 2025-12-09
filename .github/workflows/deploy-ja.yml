@@ -144,8 +144,8 @@ jobs:
             }
             git reset --hard "origin/${{ env.LOCK_BRANCH }}"
             
-            # 全てのロックファイルを取得してソート（コミット順 = プッシュ順）
-            LOCK_FILES=$(git log --name-only --pretty=format: --diff-filter=A -- '*.lock' | grep -v '^$' | tac)
+            # 現在存在するロックファイルのみを取得してソート（ファイル名順 = タイムスタンプ順）
+            LOCK_FILES=$(ls *.lock 2>/dev/null | sort)
             
             if [ -z "$LOCK_FILES" ]; then
               echo "No lock files found, something went wrong"
