@@ -13,6 +13,11 @@ permissions:
   contents: write
   pull-requests: read
 
+# 全ジョブで共有する環境変数
+env:
+  LOCK_BRANCH: gh-action-mutex
+  LOCK_FILE_PREFIX: deploy-ja
+
 concurrency:
   group: document-stage-${{ github.event.number }}
   cancel-in-progress: false
@@ -43,8 +48,7 @@ jobs:
       - name: Acquire Lock
         id: acquire
         run: |
-          LOCK_BRANCH="gh-action-mutex"
-          LOCK_FILE="deploy-ja-${{ github.run_id }}-${{ github.run_attempt }}.lock"
+          LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}.lock"
           MAX_WAIT_TIME=300  # 5分
           START_TIME=$(date +%s)
           ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
@@ -52,23 +56,23 @@ jobs:
           echo "lock_file=$LOCK_FILE" >> $GITHUB_OUTPUT
           
           # ロックブランチの存在確認と作成
-          if ! git ls-remote --heads origin "$LOCK_BRANCH" | grep -q "$LOCK_BRANCH"; then
+          if ! git ls-remote --heads origin "${{ env.LOCK_BRANCH }}" | grep -q "${{ env.LOCK_BRANCH }}"; then
             echo "Creating lock branch..."
-            git checkout --orphan "$LOCK_BRANCH"
+            git checkout --orphan "${{ env.LOCK_BRANCH }}"
             git rm -rf . 2>/dev/null || true
             echo "Mutex lock branch" > README.md
             git add README.md
             git commit -m "Initialize mutex lock branch"
-            if ! git push origin "$LOCK_BRANCH"; then
+            if ! git push origin "${{ env.LOCK_BRANCH }}"; then
               echo "Failed to create lock branch (may already exist)"
             fi
             git checkout "$ORIGINAL_BRANCH"
           fi
           
           # ロックブランチをフェッチ
-          git fetch origin "$LOCK_BRANCH"
-          git checkout "$LOCK_BRANCH" 2>/dev/null || {
-            git checkout -b "$LOCK_BRANCH" "origin/$LOCK_BRANCH"
+          git fetch origin "${{ env.LOCK_BRANCH }}"
+          git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+            git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
           }
           
           # 自分のロックファイルを作成
@@ -80,11 +84,11 @@ jobs:
           # プッシュ（リトライあり）
           RETRY=0
           while [ $RETRY -lt 5 ]; do
-            if git push origin "$LOCK_BRANCH"; then
+            if git push origin "${{ env.LOCK_BRANCH }}"; then
               break
             else
               echo "Push failed, pulling and retrying..."
-              git pull --rebase origin "$LOCK_BRANCH"
+              git pull --rebase origin "${{ env.LOCK_BRANCH }}"
               RETRY=$((RETRY + 1))
               sleep 2
             fi
@@ -92,6 +96,8 @@ jobs:
           
           if [ $RETRY -eq 5 ]; then
             echo "Failed to push lock file after retries"
+            # ローカルクリーンアップ（コミットを取り消す）
+            git reset --hard HEAD~1 2>/dev/null || true
             git checkout "$ORIGINAL_BRANCH"
             echo "acquired=false" >> $GITHUB_OUTPUT
             exit 1
@@ -111,11 +117,11 @@ jobs:
             fi
             
             # 最新のロックブランチ状態を取得
-            git fetch origin "$LOCK_BRANCH"
-            git checkout "$LOCK_BRANCH" 2>/dev/null || {
-              git checkout -b "$LOCK_BRANCH" "origin/$LOCK_BRANCH"
+            git fetch origin "${{ env.LOCK_BRANCH }}"
+            git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+              git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
             }
-            git reset --hard "origin/$LOCK_BRANCH"
+            git reset --hard "origin/${{ env.LOCK_BRANCH }}"
             
             # 全てのロックファイルを取得してソート（ファイル名順 = タイムスタンプ順）
             LOCK_FILES=$(ls *.lock 2>/dev/null | sort)
@@ -264,21 +270,20 @@ jobs:
       
       - name: Release Lock
         run: |
-          LOCK_BRANCH="gh-action-mutex"
           LOCK_FILE="${{ needs.acquire-lock.outputs.lock-file }}"
           ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
           
           # ロックブランチをチェックアウト
-          git fetch origin "$LOCK_BRANCH"
-          git checkout "$LOCK_BRANCH" 2>/dev/null || {
-            git checkout -b "$LOCK_BRANCH" "origin/$LOCK_BRANCH"
+          git fetch origin "${{ env.LOCK_BRANCH }}"
+          git checkout "${{ env.LOCK_BRANCH }}" 2>/dev/null || {
+            git checkout -b "${{ env.LOCK_BRANCH }}" "origin/${{ env.LOCK_BRANCH }}"
           }
           
           # ロックファイルを削除
           if [ -f "$LOCK_FILE" ]; then
             git rm "$LOCK_FILE"
             git commit -m "Release lock: $LOCK_FILE"
-            git push origin "$LOCK_BRANCH" || {
+            git push origin "${{ env.LOCK_BRANCH }}" || {
               echo "Failed to delete lock file, but continuing..."
             }
             echo "Lock released successfully: $LOCK_FILE"
