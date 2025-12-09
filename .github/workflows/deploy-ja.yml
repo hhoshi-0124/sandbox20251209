@@ -20,6 +20,8 @@ env:
   LOCK_FILE_PREFIX: deploy-ja
   LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。"
   LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
+  LOCK_BRANCH_README_BODY3: "# [注意点]"
+  LOCK_BRANCH_README_BODY4: "手動でジョブをキャンセルした場合はロックファイルが残ったままとなる場合があります。その場合は、該当のロックファイルを手動で削除してください。"
 
 concurrency:
   group: document-stage-${{ github.event.number }}
@@ -52,7 +54,7 @@ jobs:
         id: acquire
         run: |
           LOCK_FILE="${{ env.LOCK_FILE_PREFIX }}-PR${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}.lock"
-          MAX_WAIT_TIME=300  # 5分
+          MAX_WAIT_TIME=3600  # 60分(複数フォルダ更新時を考慮しタイムアウトを60分に設定)
           START_TIME=$(date +%s)
           ORIGINAL_BRANCH="${{ github.head_ref || github.ref_name }}"
           
@@ -67,12 +69,18 @@ jobs:
             README_BODY1="${{ env.LOCK_BRANCH_README_BODY1 }}"
             README_BODY1="${README_BODY1//__LOCK_DEPLOY_ENVIRONMENT__/${{ env.LOCK_DEPLOY_ENVIRONMENT }}}"
             README_BODY2="${{ env.LOCK_BRANCH_README_BODY2 }}"
+            README_BODY3="${{ env.LOCK_BRANCH_README_BODY3 }}"
+            README_BODY4="${{ env.LOCK_BRANCH_README_BODY4 }}"
             {
               echo "# ${{ env.LOCK_BRANCH }}"
               echo ""
               echo "$README_BODY1"
               echo ""
               echo "$README_BODY2"
+              echo ""
+              echo "$README_BODY3"
+              echo ""
+              echo "$README_BODY4"
             } > README.md
             git add README.md
             git commit -m "Initialize mutex lock branch"
@@ -267,7 +275,7 @@ jobs:
   release-lock:
     runs-on: ubuntu-latest
     needs: [acquire-lock, setup, build_and_deploy_job]
-    if: always() && needs.acquire-lock.outputs.lock-acquired == 'true'
+    if: (success() || failure() || cancelled()) && needs.acquire-lock.outputs.lock-acquired == 'true'
     
     steps:
       - name: Checkout
