@@ -18,7 +18,7 @@ env:
   LOCK_BRANCH: document-deploy-mutex-stage
   LOCK_DEPLOY_ENVIRONMENT: ステージング
   LOCK_FILE_PREFIX: deploy-ja
-  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの${{ env.LOCK_DEPLOY_ENVIRONMENT }}環境デプロイ時の排他に使用する空のブランチです。"
+  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの__LOCK_DEPLOY_ENVIRONMENT__環境デプロイ時の排他に使用する空のブランチです。"
   LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
 
 concurrency:
@@ -63,11 +63,13 @@ jobs:
             echo "Creating lock branch..."
             git checkout --orphan "${{ env.LOCK_BRANCH }}"
             git rm -rf . 2>/dev/null || true
-            # README.mdを作成
+            # README.mdを作成（テンプレート文字列を置換）
+            README_BODY1="${{ env.LOCK_BRANCH_README_BODY1 }}"
+            README_BODY1="${README_BODY1//__LOCK_DEPLOY_ENVIRONMENT__/${{ env.LOCK_DEPLOY_ENVIRONMENT }}}"
             {
               echo "# ${{ env.LOCK_BRANCH }}"
               echo ""
-              echo "${{ env.LOCK_BRANCH_README_BODY1 }}"
+              echo "$README_BODY1"
               echo "${{ env.LOCK_BRANCH_README_BODY2 }}"
             } > README.md
             git add README.md
