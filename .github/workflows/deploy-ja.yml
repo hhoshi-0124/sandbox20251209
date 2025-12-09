@@ -15,9 +15,10 @@ permissions:
 
 # 全ジョブで共有する環境変数
 env:
-  LOCK_BRANCH: gh-action-mutex
+  LOCK_BRANCH: document-deploy-mutex-stage
+  LOCK_DEPLOY_ENVIRONMENT: ステージング
   LOCK_FILE_PREFIX: deploy-ja
-  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの本番環境デプロイ時の排他に使用する空のブランチです。"
+  LOCK_BRANCH_README_BODY1: "このブランチはドキュメントの${{ env.LOCK_DEPLOY_ENVIRONMENT }}環境デプロイ時の排他に使用する空のブランチです。"
   LOCK_BRANCH_README_BODY2: "このブランチの削除やmainブランチへのマージは絶対に行わないでください。"
 
 concurrency:
