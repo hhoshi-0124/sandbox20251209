@@ -63,12 +63,12 @@ jobs:
             git checkout --orphan "${{ env.LOCK_BRANCH }}"
             git rm -rf . 2>/dev/null || true
             # README.mdを作成
-            cat > README.md << 'EOFREADME'
-# ${{ env.LOCK_BRANCH }}
-
-${{ env.LOCK_BRANCH_README_BODY1 }}
-${{ env.LOCK_BRANCH_README_BODY2 }}
-EOFREADME
+            {
+              echo "# ${{ env.LOCK_BRANCH }}"
+              echo ""
+              echo "${{ env.LOCK_BRANCH_README_BODY1 }}"
+              echo "${{ env.LOCK_BRANCH_README_BODY2 }}"
+            } > README.md
             git add README.md
             git commit -m "Initialize mutex lock branch"
             if ! git push origin "${{ env.LOCK_BRANCH }}"; then
