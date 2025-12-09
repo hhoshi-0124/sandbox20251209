@@ -241,7 +241,7 @@ jobs:
 
   release-lock:
     runs-on: ubuntu-latest
-    needs: [acquire-lock, setup, deploy]
+    needs: [acquire-lock, setup, build_and_deploy_job]
     if: always() && needs.acquire-lock.outputs.lock-acquired == 'true'
     
     steps:
